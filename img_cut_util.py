@@ -38,19 +38,18 @@ def projection_method_cut(img: ndarray, scanning_width: int, high: int, split_si
     return y_count
 
 
-def cfs(img):
+def cfs(img, cut_size=4):
     """用队列和集合记录遍历过的像素坐标代替单纯递归以解决cfs访问过深问题"""
     filter_set = set()
     result_list = []
 
     def deeping_search(position, result, search_set):
         """深度查找"""
-        if position in search_set:
-            return
-
         displacement_list =[(-1, -1), (-1, 0), (-1, 1), (1, -1), (1, 0), (1, 1), (0, 1), (0, -1)]
         for displacement in displacement_list:
             dis = (position[0] + displacement[0], position[1] + displacement[1])
+            if dis in search_set:
+                continue
 
             if img[dis[0], dis[1]] == 0:
                 result.append(dis)
@@ -72,13 +71,23 @@ def cfs(img):
             deeping_search((y, x), result, filter_set)
             result_list.append(result)
 
-    return result_list
+    result_list.sort(key=len, reverse=True)
+
+    for result in result_list[:4]:
+        max_y = max(result, key=lambda _: _[0])[0]
+        min_y = min(result, key=lambda _: _[0])[0]
+        max_x = max(result, key=lambda _: _[1])[1]
+        min_x = min(result, key=lambda _: _[1])[1]
+
+        yield list(itertools.product([max_y, min_y], [max_x, min_x]))
+
 
 
 if __name__ == '__main__':
     # img = get_dynamic_binary_image("dio-1.jpg", "dio-2.jpg")
     img = get_dynamic_binary_image("di4.png", "di4-2.png")
-    print(cfs(img))
+    for result in cfs(img):
+        print(result)
     # print(projection_method_cut(img, 10, 5))
 
 
