@@ -79,9 +79,8 @@ def cfs(img, cut_size=4):
         max_x = max(result, key=lambda _: _[1])[1]
         min_x = min(result, key=lambda _: _[1])[1]
 
-        yield list(itertools.product([max_y, min_y], [max_x, min_x]))
-
-
+        # yield list(itertools.product([max_y, min_y], [max_x, min_x]))
+        yield [(max_y, min_y), (max_x, min_x)]
 
 if __name__ == '__main__':
     # img = get_dynamic_binary_image("dio-1.jpg", "dio-2.jpg")

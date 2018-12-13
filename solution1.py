@@ -1,139 +1,217 @@
-# 验证验证码
-import itertools
-from queue import Queue
+from itertools import groupby
 
-import cv2
+from PIL import Image
 
 
-def get_dynamic_binary_image(source_path, to_path):
-    """获取 灰度/二值图"""
-    im = cv2.imread(source_path)
-
-    # 灰度化
-    im = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
-
-    # 二值化
-    th1 = cv2.adaptiveThreshold(im, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21,  1)
-    cv2.imwrite(to_path, th1)
-    return th1
-
-
-def clear_border(img, to_path, border_size=2):
-    """清除边框"""
-    h, w = img.shape[:2]
-    for y, x in itertools.product(range(0, w), range(0, h)):
-        if y < border_size or y > w - border_size:
-            img[x, y] = 255
-        if x < border_size or x > h - border_size:
-            img[x, y] = 255
-    cv2.imwrite(to_path, img)
+def binarizing(img, threshold):
+    """传入image对象进行灰度、二值处理"""
+    img = img.convert("L")  # 转灰度
+    pixdata = img.load()
+    w, h = img.size
+    # 遍历所有像素，大于阈值的为黑色
+    for y in range(h):
+        for x in range(w):
+            if pixdata[x, y] < threshold:
+                pixdata[x, y] = 0
+            else:
+                pixdata[x, y] = 255
     return img
 
 
+def vertical(img):
+    """传入二值化后的图片进行垂直投影"""
+    pixdata = img.load()
+    w, h = img.size
+    result = []
+    for x in range(w):
+        black = 0
+        for y in range(h):
+            if pixdata[x, y] == 0:
+                black += 1
+        result.append(black)
+    return result
 
-# cfs 切割
-def cfs(im, x_fd, y_fd):
+
+def get_start_x(hist_width):
+    """根据图片垂直投影的结果来确定起点
+     hist_width中间值 前后取4个值 再这范围内取最小值
     """
+    mid = len(hist_width) // 2  # 注意py3 除法和py2不同
+    temp = hist_width[mid - 4:mid + 5]
+    return mid - 4 + temp.index(min(temp))
 
+
+def get_nearby_pix_value(img_pix, x, y, j):
+    """获取临近5个点像素数据"""
+    if j == 1:
+        return 0 if img_pix[x - 1, y + 1] == 0 else 1
+    elif j == 2:
+        return 0 if img_pix[x, y + 1] == 0 else 1
+    elif j == 3:
+        return 0 if img_pix[x + 1, y + 1] == 0 else 1
+    elif j == 4:
+        return 0 if img_pix[x + 1, y] == 0 else 1
+    elif j == 5:
+        return 0 if img_pix[x - 1, y] == 0 else 1
+    else:
+        raise Exception("get_nearby_pix_value error")
+
+
+def get_end_route(img, start_x, height):
+    """获取滴水路径"""
+    left_limit = 0
+    right_limit = img.size[0] - 1
+    end_route = []
+    cur_p = (start_x, 0)
+    last_p = cur_p
+    end_route.append(cur_p)
+
+    while cur_p[1] < (height - 1):
+        sum_n = 0
+        max_w = 0
+        next_x = cur_p[0]
+        next_y = cur_p[1]
+        pix_img = img.load()
+        for i in range(1, 6):
+            cur_w = get_nearby_pix_value(pix_img, cur_p[0], cur_p[1], i) * (6 - i)
+            sum_n += cur_w
+            if max_w < cur_w:
+                max_w = cur_w
+        if sum_n == 0:
+            # 如果全黑则看惯性
+            max_w = 4
+        if sum_n == 15:
+            max_w = 6
+
+        if max_w == 1:
+            next_x = cur_p[0] - 1
+            next_y = cur_p[1]
+        elif max_w == 2:
+            next_x = cur_p[0] + 1
+            next_y = cur_p[1]
+        elif max_w == 3:
+            next_x = cur_p[0] + 1
+            next_y = cur_p[1] + 1
+        elif max_w == 5:
+            next_x = cur_p[0] - 1
+            next_y = cur_p[1] + 1
+        elif max_w == 6:
+            next_x = cur_p[0]
+            next_y = cur_p[1] + 1
+        elif max_w == 4:
+            if next_x > cur_p[0]:
+                # 向右
+                next_x = cur_p[0] + 1
+                next_y = cur_p[1] + 1
+            if next_x < cur_p[0]:
+                next_x = cur_p[0]
+                next_y = cur_p[1] + 1
+            if sum_n == 0:
+                next_x = cur_p[0]
+                next_y = cur_p[1] + 1
+        else:
+            raise Exception("get end route error")
+
+        if last_p[0] == next_x and last_p[1] == next_y:
+            if next_x < cur_p[0]:
+                max_w = 5
+                next_x = cur_p[0] + 1
+                next_y = cur_p[1] + 1
+            else:
+                max_w = 3
+                next_x = cur_p[0] - 1
+                next_y = cur_p[1] + 1
+        last_p = cur_p
+
+        if next_x > right_limit:
+            next_x = right_limit
+            next_y = cur_p[1] + 1
+        if next_x < left_limit:
+            next_x = left_limit
+            next_y = cur_p[1] + 1
+        cur_p = (next_x, next_y)
+        end_route.append(cur_p)
+    return end_route
+
+
+def get_split_seq(projection_x):
+    split_seq = []
+    start_x = 0
+    length = 0
+    for pos_x, val in enumerate(projection_x):
+        if val == 0 and length == 0:
+            continue
+        elif val == 0 and length != 0:
+            split_seq.append([start_x, length])
+            length = 0
+        elif val == 1:
+            if length == 0:
+                start_x = pos_x
+            length += 1
+        else:
+            raise Exception('generating split sequence occurs error')
+    # 循环结束时如果length不为0，说明还有一部分需要append
+    if length != 0:
+        split_seq.append([start_x, length])
+    return split_seq
+
+
+def do_split(source_image, starts, filter_ends):
     """
-    h, w = img.shape[:2]
-    for y, x in itertools.product(range(0, h), range(0, w)):
+    具体实行切割
+    : param starts: 每一行的起始点 tuple of list
+    : param ends: 每一行的终止点
+    """
+    left = starts[0][0]
+    top = starts[0][1]
+    right = filter_ends[0][0]
+    bottom = filter_ends[0][1]
+    pixdata = source_image.load()
+    for i in range(len(starts)):
+        left = min(starts[i][0], left)
+        top = min(starts[i][1], top)
+        right = max(filter_ends[i][0], right)
+        bottom = max(filter_ends[i][1], bottom)
+    width = right - left + 1
+    height = bottom - top + 1
+    image = Image.new('RGB', (width, height), (255, 255, 255))
+    for i in range(height):
+        start = starts[i]
+        end = filter_ends[i]
+        for x in range(start[0], end[0] + 1):
+            if pixdata[x, start[1]] == 0:
+                image.putpixel((x - left, start[1] - top), (0, 0, 0))
+    return image
 
 
+def drop_fall(img):
+    """滴水分割"""
+    width, height = img.size
+    # 1 二值化
+    b_img = binarizing(img, 20)
+    # 2 垂直投影
+    hist_width = vertical(b_img)
+    # 3 获取起点
+    start_x = get_start_x(hist_width)
 
+    # 4 开始滴水算法
+    start_route = []
+    for y in range(height):
+        start_route.append((0, y))
 
+    end_route = get_end_route(img, start_x, height)
+    filter_end_route = [max(list(k)) for _, k in groupby(end_route, lambda x: x[1])]  # 注意这里groupby
+    img1 = do_split(img, start_route, filter_end_route)
+    img1.save('cuts-d-1.png')
 
-  xaxis=[]
-  yaxis=[]
-  visited =set()
-  q = Queue()
-  q.put((x_fd, y_fd))
-  visited.add((x_fd, y_fd))
-  offsets=[(1, 0), (0, 1), (-1, 0), (0, -1)]#四邻域
-
-  while not q.empty():
-      x,y=q.get()
-
-      for xoffset,yoffset in offsets:
-          x_neighbor,y_neighbor = x+xoffset,y+yoffset
-
-          if (x_neighbor,y_neighbor) in (visited):
-              continue  # 已经访问过了
-
-          visited.add((x_neighbor, y_neighbor))
-
-          try:
-              if im[x_neighbor, y_neighbor] == 0:
-                  xaxis.append(x_neighbor)
-                  yaxis.append(y_neighbor)
-                  q.put((x_neighbor,y_neighbor))
-
-          except IndexError:
-              pass
-
-  # print(xaxis)
-  if (len(xaxis) == 0 | len(yaxis) == 0):
-    xmax = x_fd + 1
-    xmin = x_fd
-    ymax = y_fd + 1
-    ymin = y_fd
-
-  else:
-    xmax = max(xaxis)
-    xmin = min(xaxis)
-    ymax = max(yaxis)
-    ymin = min(yaxis)
-    #ymin,ymax=sort(yaxis)
-
-  return ymax,ymin,xmax,xmin
-
-def detectFgPix(im,xmax):
-  '''搜索区块起点
-  '''
-
-  h,w = im.shape[:2]
-  for y_fd in range(xmax+1,w):
-      for x_fd in range(h):
-          if im[x_fd,y_fd] == 0:
-              return x_fd,y_fd
-
-
-def CFS(im):
-    """切割字符位置"""
-    zoneL = []  # 各区块长度L列表
-    zoneWB = []  # 各区块的X轴[起始，终点]列表
-    zoneHB = []  # 各区块的Y轴[起始，终点]列表
-
-    xmax = 0
-    # 上一区块结束黑点横坐标,这里是初始化
-    for i in range(10):
-
-        try:
-            x_fd, y_fd = detectFgPix(im, xmax)
-            # print(y_fd,x_fd)
-            xmax, xmin, ymax, ymin = cfs(im, x_fd, y_fd)
-            L = xmax - xmin
-            H = ymax - ymin
-            zoneL.append(L)
-            zoneWB.append([xmin, xmax])
-            zoneHB.append([ymin, ymax])
-
-        except TypeError:
-            return zoneL, zoneWB, zoneHB
-
-    return zoneL, zoneWB, zoneHB
-
-
-def find_contours(img):
-    result = cv2.findContours(img, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    cv2.imshow("binary2", img)
-    print()
-
+    start_route = list(map(lambda x: (x[0] + 1, x[1]), filter_end_route))  # python3中map不返回list需要自己转换
+    end_route = []
+    for y in range(height):
+        end_route.append((width - 1, y))
+    img2 = do_split(img, start_route, end_route)
+    img2.save('cuts-d-2.png')
 
 
 if __name__ == '__main__':
-    img = get_dynamic_binary_image("img.png", "dio.png")
-    img = clear_border(img, "dio2.png")
-    img = interference_line(img, "dio3.png")
-    img = interference_point(img, "dio4.png")
-    # find_contours(img)
+    p = Image.open("dio_1.png")
+    drop_fall(p)
